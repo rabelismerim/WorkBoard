@@ -6,12 +6,12 @@ Kanban para projetos pessoais com Django REST Framework, Vue 3, JavaScript e Pin
 
 ## Funcionalidades
 
-- Autenticação por sessão, proteção CSRF e validação de senhas.
+- Autenticação por sessão, proteção CSRF, limite de tentativas e recuperação de senha.
 - Quadros pessoais ou compartilhados com três colunas iniciais.
 - Tarefas com descrição, prioridade e prazo; criação, edição e exclusão.
 - Arrastar tarefas entre colunas ou mover pelo seletor no editor, inclusive no celular.
 - Busca por título e descrição e contador da coluna “Concluído”.
-- Testes de isolamento dos dados e CI para API e build.
+- Testes da API e de interface no CI, além de build e verificações de containers.
 - Sprints com objetivo, período, planejamento, início e encerramento manual.
 - Tarefas vinculadas a sprints, filtro por ciclo e backlog.
 - Retrospectiva por sprint com pontos positivos, melhorias e ações acompanháveis.
@@ -80,7 +80,15 @@ Use as abas **Visão Kanban**, **Sprints** e **Retrospectiva** dentro de cada qu
 5. Abra a retrospectiva para registrar conquistas, melhorias e ações. As notas podem ser editadas/excluídas; as ações podem ser concluídas e reabertas.
 6. Encerre a sprint com confirmação. O sistema registra os totais do ciclo e devolve tarefas pendentes ao backlog, preservando os cartões. A retrospectiva continua editável.
 
-A conclusão usa colunas configuradas com o tipo **Concluída**, independentemente do nome. A coluna inicial “Concluído” já tem esse tipo. Os indicadores de sprints encerradas são um retrato numérico do encerramento; não são recalculados se os cartões mudarem depois. Não há histórico individual de tarefas removidas do ciclo: o filtro de uma sprint encerrada mostra os cartões que ainda estão vinculados a ela. Sprints encerradas não podem receber novas tarefas, ser reabertas, editadas ou excluídas. Ações de retrospectiva são itens de acompanhamento próprios e não criam cartões automaticamente.
+A conclusão usa colunas configuradas com o tipo **Concluída**, independentemente do nome. A coluna inicial “Concluído” já tem esse tipo. Os indicadores de sprints encerradas são um retrato numérico do encerramento; não são recalculados se os cartões mudarem depois. O botão “Histórico da sprint” preserva os participantes e seus dados no encerramento, inclusive tarefas retiradas do ciclo, devolvidas ao backlog ou excluídas depois. O filtro do Kanban mostra apenas os cartões atualmente vinculados. Sprints encerradas não podem receber novas tarefas, ser reabertas, editadas ou excluídas. Ações de retrospectiva são itens de acompanhamento próprios e não criam cartões automaticamente.
+
+## Atualizações em tempo real e histórico
+
+Alterações confirmadas no banco notificam as sessões dos membros por WebSocket. Eventos não transportam dados privados do quadro; o cliente consulta a API novamente, que revalida as permissões. Logout e troca de senha revogam a sessão; o servidor revalida a conexão a cada entrega e heartbeat.
+
+O histórico das sprints guarda participantes, dados dos cartões e retiradas. Os ciclos encerrados preservam esse registro mesmo quando tarefas são alteradas depois. Sprints existentes antes da migração importam apenas os cartões ainda vinculados; participantes removidos anteriormente não podem ser reconstruídos.
+
+![Histórico preservado da sprint](docs/screenshots/58-historico-sprint.png)
 
 ## Demonstração visual
 
@@ -246,6 +254,43 @@ npm run dev
 
 Abra http://127.0.0.1:5173 e cadastre sua conta. O Vite encaminha `/api` ao Django na mesma origem. Não há credenciais predefinidas.
 
+## Docker
+
+Com Docker e Docker Compose instalados:
+
+```powershell
+docker compose up --build --wait
+```
+
+Abra http://localhost:8080. PostgreSQL, Redis, arquivos e recursos estáticos usam volumes persistentes. Essa execução usa um banco separado do SQLite local, portanto contas e quadros precisam ser criados novamente nesse ambiente. Apenas Nginx publica uma porta no host.
+
+Para produção, copie `.env.example` para `.env`, configure os valores e gere uma chave forte:
+
+```powershell
+.\.venv\Scripts\python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
+docker compose -f compose.yml -f compose.production.yml up --build --wait
+```
+
+O perfil de produção exige chave, domínio, origem HTTPS, senha do banco e SMTP. Coloque Nginx atrás de um proxy TLS que substitua os cabeçalhos encaminhados; o backend não publica uma porta direta. Use uma senha de banco compatível com URL. A inicialização aplica migrações e coleta arquivos estáticos; em uma implantação com várias réplicas, execute as migrações em uma etapa única antes de subir as réplicas.
+
+O CI configura a subida dos containers e verifica a rota da API. Docker não estava disponível no ambiente local de implementação; essa execução ainda precisa ser confirmada pelo job de containers.
+
+## Conta e recuperação de senha
+
+No cadastro pela interface, informe seu e-mail. Contas antigas podem adicioná-lo em **Minha conta**, clicando no nome do usuário no cabeçalho e confirmando a senha atual. A API mantém compatibilidade com contas sem e-mail; elas precisam cadastrar um endereço antes de usar a recuperação.
+
+Use **Esqueci minha senha** no login. O sistema responde com a mesma mensagem para e-mails cadastrados e desconhecidos. O link vale por uma hora, só pode ser usado uma vez e a troca de senha invalida as sessões anteriores.
+
+Login, recuperação, redefinição e alteração de e-mail usam limites persistidos no banco. O padrão é de 10 tentativas por identificação e 30 por IP em 15 minutos; ao atingir o limite, a API responde `429` com `Retry-After`. `AUTH_RATE_LIMIT` ajusta a quantidade. Endereços de proxy só são usados quando explicitamente habilitados; o perfil de produção ativa isso atrás do Nginx, que substitui `X-Real-IP`.
+
+Em desenvolvimento, o backend de e-mail escreve o link no terminal do Django. Em produção, configure SMTP e `PUBLIC_URL` com a origem HTTPS do frontend. A entrega por um provedor externo depende dessas credenciais; os testes usam uma caixa de e-mail em memória.
+
+![Conta e e-mail de recuperação](docs/screenshots/59-conta-email.png)
+
+![Solicitar recuperação de senha](docs/screenshots/60-recuperar-senha.png)
+
+![Definir uma nova senha](docs/screenshots/61-redefinir-senha.png)
+
 ## Estrutura e verificações
 
 `backend/config` contém configurações e URLs; `backend/boards`, modelos, serializers, API e testes. `frontend/src` contém a interface, cliente HTTP e store Pinia. A relação é `User → Board → Column → Task`; o acesso do dono e dos membros é validado nas consultas e gravações. `work_views.py` concentra as APIs, `access.py` centraliza permissões, WIP e revisões; `FlowEvent` registra as transições para os gráficos.
@@ -261,13 +306,27 @@ cd frontend
 npm run build
 ```
 
+Os testes permanentes de interface usam um banco e servidores isolados nas portas 8001 e 5174:
+
+```powershell
+cd frontend
+npx playwright install chromium
+npm run test:e2e
+```
+
+Para usar o Edge já instalado no Windows, configure `$env:PLAYWRIGHT_CHANNEL = "msedge"` antes de rodar os testes. O CI instala Chromium e executa os fluxos de login, movimentação, recuperação, colaboração em tempo real, histórico das sprints, conta e segurança. Evidências de falha ficam em uma pasta ignorada pelo Git e podem ser consultadas nos artifacts do CI.
+
 SQLite facilita o desenvolvimento. Para PostgreSQL, exporte `DATABASE_URL` antes das migrações. Veja `backend/.env.example`; ele documenta variáveis e não é carregado automaticamente.
 
 ## Produção e próximos passos
 
-MVP local: para publicar, sirva frontend e `/api` na mesma origem com HTTPS, configure `DJANGO_DEBUG=false`, uma chave secreta forte, hosts/origens, PostgreSQL, backups e servidor WSGI (Gunicorn em Linux). Configure limitação de tentativas de login no proxy; o endpoint de sessão ainda não tem limitação própria.
+O projeto inclui configuração Docker para desenvolvimento e uma sobreposição de produção. O servidor é ASGI (Daphne), com PostgreSQL, Redis e Nginx. Configure HTTPS no proxy de entrada, uma chave secreta forte, hosts/origens, credenciais SMTP e backups antes de publicar.
 
-Próximas evoluções: paginação para quadros grandes, atualização via WebSocket e envio opcional de notificações por e-mail. A versão atual usa atualização periódica (quadros a cada 20 segundos, notificações a cada 30), sem serviços externos de mensageria. Colaboração ocorre com usuários já cadastrados. Para produção com vários usuários, use PostgreSQL; SQLite é a opção de desenvolvimento local.
+A atualização principal usa WebSocket autenticado. O navegador reconecta automaticamente; consultas periódicas permanecem como fallback quando a conexão está indisponível. Redis distribui eventos entre processos em produção; o desenvolvimento local pode usar uma camada em memória com um único processo.
+
+As listas de quadros e tarefas usam páginas de 50 registros (limite configurável de até 100 pela API). O frontend pagina os cartões por coluna; filtros e buscas são aplicados no servidor antes da paginação. Checklist, comentários, anexos e histórico são carregados ao abrir o cartão.
+
+Próximas evoluções: agrupamento de eventos para quadros muito grandes e notificações de atividades por e-mail. O envio de e-mail implementado nesta versão atende à recuperação de senha.
 
 Anexos ficam em `backend/media`, não entram no Git e só podem ser baixados por uma rota autenticada. Inclua essa pasta nos backups. A aplicação baixa arquivos como anexos, não como conteúdo executável; não há varredura antivírus integrada.
 
