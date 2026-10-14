@@ -1,0 +1,12 @@
+.git
+.venv
+**/node_modules
+**/dist
+**/__pycache__
+**/*.sqlite3
+**/.env
+backend/media
+frontend/scripts/capture-*.mjs
+frontend/test-results
+frontend/tests
+docs
