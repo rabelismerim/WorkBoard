@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { Bell, X, RotateCcw } from 'lucide-vue-next'
 import { api } from '../api'
 import { useWorkboard } from '../stores/workboard'
@@ -9,6 +9,7 @@ let timer
 async function refresh() { try {const [n,d]=await Promise.all([api('notifications/'),api('notifications/deadlines/')]);notifications.value=n;deadlines.value=d}catch{} }
 onMounted(()=>{refresh();timer=setInterval(refresh,30000)})
 onUnmounted(()=>clearInterval(timer))
+watch(()=>store.eventTick,refresh)
 async function showTrash() {await store.run(async()=>{trash.value=await api('boards/trash/');trashOpen.value=true})}
 async function restore(id) {await store.run(async()=>{await store.restoreBoard(id);trash.value=await api('boards/trash/')})}
 function go(item) {store.selected=item.board;const task=store.board?.columns.flatMap(c=>c.tasks).find(t=>t.id===(item.task ?? item.id));if(task)emit('open-task',task);open.value=false}

@@ -10,3 +10,5 @@
 .label-caption{display:flex;align-items:center;gap:7px}.info-tooltip-trigger{padding:2px;color:#93c5fd;flex-shrink:0;border-radius:50%;cursor:help}.info-tooltip-content{position:fixed;z-index:40;background:#20324f;border:1px solid #5077ad;border-radius:8px;padding:13px 15px;color:#e8f0fd;font-size:12px;line-height:1.65;font-weight:400;box-shadow:0 6px 24px #0008;pointer-events:none}
 
 .label-field{display:flex;flex-direction:column;gap:8px}
+
+.history-entry{padding:15px 0;border-bottom:1px solid #273145}.history-entry strong{font-size:13px}.history-entry p,.history-entry small{font-size:11px}

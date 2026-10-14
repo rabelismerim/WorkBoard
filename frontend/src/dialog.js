@@ -1,7 +1,7 @@
 export const dialogDirective = {
   mounted(element) {
     const previous = document.activeElement
-    const focusable = () => [...element.querySelectorAll('button,input,textarea,select,a[href],[tabindex="0"]')].filter(el => !el.disabled && el.getClientRects().length)
+    const focusable = () => [...element.querySelectorAll('button,input,textarea,select,a[href],[tabindex="0"]')].filter(el => !el.matches(':disabled') && el.getClientRects().length)
     const handler = event => {
       if (event.key !== 'Tab') return
       const items = focusable(), first = items[0], last = items.at(-1)
