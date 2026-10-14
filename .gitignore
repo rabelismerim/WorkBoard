@@ -10,6 +10,5 @@ staticfiles/
 backend/media/
 frontend/test-results/
 
-# Local documentation artifacts and capture helpers
-docs/screenshots/
+# Local capture helpers
 frontend/scripts/capture-*.mjs
