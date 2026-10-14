@@ -37,7 +37,7 @@ class AccessTests(APITestCase):
 
     def test_foreign_data_hidden(self):
         self.client.force_authenticate(self.other)
-        self.assertEqual(self.client.get('/api/boards/').json(), [])
+        self.assertEqual(self.client.get('/api/boards/').json()['results'], [])
         self.assertEqual(self.client.get(f'/api/boards/{self.board.id}/').status_code, 404)
         self.assertEqual(self.client.patch(f'/api/tasks/{self.task.id}/', {'title':'Invadido'}).status_code, 404)
 

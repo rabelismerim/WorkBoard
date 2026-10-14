@@ -26,7 +26,7 @@ class WorkboardTests(APITestCase):
 
     def test_roles_and_revocation(self):
         self.client.force_authenticate(self.editor)
-        self.assertEqual(len(self.client.get('/api/boards/').json()),1)
+        self.assertEqual(len(self.client.get('/api/boards/').json()['results']),1)
         self.assertEqual(self.write(f'/api/tasks/{self.task.id}/',data={'title':'Editado'}).status_code,200)
         self.assertEqual(self.write(f'/api/boards/{self.board.id}/',data={'title':'Invadido'}).status_code,403)
         self.client.force_authenticate(self.viewer)
@@ -85,7 +85,7 @@ class WorkboardTests(APITestCase):
         self.assertEqual(self.write(f'/api/tasks/{self.task.id}/',data={'title':'Não alterar'}).status_code,400)
         self.assertEqual(self.write(f'/api/boards/{self.board.id}/',data={'archived':False}).status_code,200)
         self.assertEqual(self.write(f'/api/boards/{self.board.id}/','delete').status_code,204)
-        self.assertEqual(self.client.get('/api/boards/').json(),[])
+        self.assertEqual(self.client.get('/api/boards/').json()['results'],[])
         self.assertEqual(self.write(f'/api/boards/{self.board.id}/restore/','post',{}).status_code,200)
         self.assertEqual(self.client.get(f'/api/tasks/{self.task.id}/').status_code,200)
 
