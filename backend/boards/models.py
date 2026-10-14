@@ -140,3 +140,24 @@ class FlowEvent(models.Model):
 
     class Meta:
         ordering = ['created_at', 'id']
+
+class SprintEntry(models.Model):
+    sprint = models.ForeignKey(Sprint, on_delete=models.CASCADE, related_name='entries')
+    task = models.ForeignKey(Task, null=True, on_delete=models.SET_NULL)
+    task_key = models.PositiveBigIntegerField()
+    snapshot = models.JSONField(default=dict)
+    added_at = models.DateTimeField(auto_now_add=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['added_at', 'id']
+        constraints = [models.UniqueConstraint(fields=['sprint','task_key'],name='unique_sprint_entry')]
+
+class AuthThrottle(models.Model):
+    key=models.CharField(max_length=64,unique=True)
+    window_start=models.DateTimeField()
+    attempts=models.PositiveIntegerField(default=0)
+
+class RecoveryEmail(models.Model):
+    user=models.OneToOneField(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='recovery_email')
+    email=models.EmailField(unique=True)

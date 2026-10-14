@@ -80,12 +80,13 @@ class TaskSerializer(serializers.ModelSerializer):
     attachments = AttachmentSerializer(many=True, read_only=True)
     activities = serializers.SerializerMethodField()
     assignee_name = serializers.CharField(source='assignee.username', read_only=True, default=None)
+    board_revision = serializers.IntegerField(source='column.board.revision',read_only=True)
     class Meta:
         model = Task
         fields = ['id', 'column', 'sprint', 'title', 'description', 'priority', 'due_date', 'position',
                   'assignee', 'assignee_name', 'labels', 'dependencies', 'blocked', 'blocked_reason',
                   'archived', 'deleted_at', 'started_at', 'completed_at', 'checklist', 'comments',
-                  'attachments', 'activities', 'created_at', 'updated_at']
+                  'attachments', 'activities', 'created_at', 'updated_at', 'board_revision']
         read_only_fields = ['position', 'deleted_at', 'started_at', 'completed_at', 'created_at', 'updated_at']
     def get_activities(self, obj):
         return ActivitySerializer(list(obj.activities.all())[:30], many=True).data
@@ -173,10 +174,16 @@ class RetroNoteSerializer(serializers.ModelSerializer):
         return attrs
 
 class SprintSerializer(serializers.ModelSerializer):
+    task_total=serializers.SerializerMethodField()
+    task_completed=serializers.SerializerMethodField()
+    def get_task_total(self,obj):
+        return obj.total_at_close if obj.status=='completed' else obj.tasks.filter(deleted_at__isnull=True,archived=False).count()
+    def get_task_completed(self,obj):
+        return obj.completed_at_close if obj.status=='completed' else obj.tasks.filter(deleted_at__isnull=True,archived=False,column__kind='done').count()
     notes = RetroNoteSerializer(many=True, read_only=True)
     class Meta:
         model = Sprint
-        fields = ['id', 'board', 'title', 'goal', 'start_date', 'end_date', 'status', 'closed_at', 'total_at_close', 'completed_at_close', 'notes']
+        fields = ['id', 'board', 'title', 'goal', 'start_date', 'end_date', 'status', 'closed_at', 'total_at_close', 'completed_at_close', 'notes', 'task_total','task_completed']
         read_only_fields = ['status', 'closed_at', 'total_at_close', 'completed_at_close']
     def validate_board(self, board):
         check_board(self, board)
@@ -229,10 +236,30 @@ class BoardSerializer(serializers.ModelSerializer):
     def get_members(self, obj):
         return [{'id':None, 'user':obj.owner_id, 'user_name':obj.owner.username, 'role':'owner'}] + MemberSerializer(obj.members.all(), many=True).data
     def get_role(self, obj):
-        return role_for(obj, self.context['request'].user)
+        user=self.context['request'].user
+        return 'owner' if obj.owner_id==user.id else next((member.role for member in obj.members.all() if member.user_id==user.id),None)
 
 class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
         fields = ['id', 'board', 'task', 'message', 'read', 'created_at']
         read_only_fields = ['board', 'task', 'message', 'created_at']
+
+class TaskSummarySerializer(serializers.ModelSerializer):
+    assignee_name=serializers.CharField(source='assignee.username',read_only=True,default=None)
+    checklist_count=serializers.IntegerField(read_only=True)
+    checklist_done=serializers.IntegerField(read_only=True)
+    dependency_pending=serializers.SerializerMethodField()
+    class Meta:
+        model=Task
+        fields=['id','column','sprint','title','description','priority','due_date','position','assignee','assignee_name','labels','dependencies','dependency_pending','blocked','blocked_reason','archived','checklist_count','checklist_done','created_at','updated_at']
+    def get_dependency_pending(self,obj):
+        return sum(d.column.kind!='done' for d in obj.dependencies.all())
+
+class BoardSummarySerializer(BoardSerializer):
+    class Meta(BoardSerializer.Meta):
+        fields=['id','title','description','role','archived','revision','deleted_at','created_at']
+
+class BoardWorkspaceSerializer(BoardSerializer):
+    def get_columns(self,obj):
+        return [{'id':c.id,'board':c.board_id,'title':c.title,'position':c.position,'kind':c.kind,'wip_limit':c.wip_limit,'task_count':c.task_count if hasattr(c,'task_count') else c.tasks.filter(deleted_at__isnull=True,archived=False).count(),'tasks':[]} for c in obj.columns.all() if c.deleted_at is None]

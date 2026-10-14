@@ -1,4 +1,5 @@
 from django.db.models import Q, F
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, APIException, ValidationError
 from .models import Board, BoardMember, Activity, Notification
@@ -40,6 +41,14 @@ def record(request, board, message, task=None, notify_user=None):
     Activity.objects.create(board=board, actor=request.user, task=task, message=message[:500])
     if notify_user and notify_user.id != request.user.id:
         Notification.objects.create(user=notify_user, board=board, task=task, message=message[:500])
+    recipients = {board.owner_id, request.user.id, *board.members.values_list('user_id', flat=True)}
+    def broadcast():
+        from asgiref.sync import async_to_sync
+        from channels.layers import get_channel_layer
+        layer = get_channel_layer()
+        for user_id in recipients:
+            async_to_sync(layer.group_send)(f'user_{user_id}', {'type':'workspace.changed'})
+    transaction.on_commit(broadcast, robust=True)
 
 def check_wip(column, task=None):
     if column.deleted_at:

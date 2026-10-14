@@ -2,6 +2,11 @@ from django.contrib.auth import authenticate, login, logout, get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
+from django.db import transaction
+from django.core.validators import validate_email
+from .auth_security import throttle, RateLimited
+from .account_views import rate_response
+from .models import RecoveryEmail
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 from django.views.decorators.http import require_http_methods
@@ -21,18 +26,29 @@ def session(request):
             username, password = data.get('username', ''), data.get('password', '')
             if not isinstance(username, str) or not isinstance(password, str):
                 raise ValueError()
+            throttle(request,'session',username)
             if data.get('register'):
                 if not username.strip() or len(username) > 150:
                     return JsonResponse({'detail': 'Informe um usuário válido.'}, status=400)
-                user = get_user_model()(username=username)
-                validate_password(password, user)
-                user.set_password(password)
-                user.save()
+                email=data.get('email','')
+                if not isinstance(email,str):raise ValueError()
+                email=email.strip().lower()
+                if email:
+                    validate_email(email)
+                    if get_user_model().objects.filter(email__iexact=email).exists():raise ValueError()
+                with transaction.atomic():
+                    user = get_user_model()(username=username,email=email)
+                    user.full_clean(exclude=['password'])
+                    validate_password(password, user)
+                    user.set_password(password)
+                    user.save()
+                    if email:RecoveryEmail.objects.create(user=user,email=email)
             else:
                 user = authenticate(request, username=username, password=password)
                 if user is None:
                     return JsonResponse({'detail': 'Usuário ou senha inválidos.'}, status=400)
             login(request, user)
+        except RateLimited:return rate_response()
         except (ValueError, ValidationError, IntegrityError) as exc:
             return JsonResponse({'detail': ' '.join(exc.messages) if isinstance(exc, ValidationError) else 'Dados inválidos ou usuário já cadastrado.'}, status=400)
     return JsonResponse({'user': {'id': request.user.id, 'username': request.user.username} if request.user.is_authenticated else None})

@@ -2,7 +2,7 @@ from datetime import timedelta
 from collections import defaultdict
 from pathlib import Path
 from django.db import transaction
-from django.db.models import Max, F
+from django.db.models import Max, F, Count, Q, Prefetch
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.http import FileResponse
@@ -16,6 +16,9 @@ from .serializers import (BoardSerializer, ColumnSerializer, TaskSerializer, Spr
                           RetroNoteSerializer, MemberSerializer, LabelSerializer, ChecklistSerializer,
                           CommentSerializer, AttachmentSerializer, ActivitySerializer, NotificationSerializer)
 from .access import accessible_boards, role_for, lock_board, record, check_wip, completion_times
+from .sprint_history import sync_history, freeze_sprint
+from .pagination import StandardPagination
+from .serializers import BoardSummarySerializer, BoardWorkspaceSerializer, TaskSummarySerializer
 
 def board_ids(request):
     return accessible_boards(request.user).filter(deleted_at__isnull=True).values_list('id', flat=True)
@@ -29,17 +32,19 @@ def flow(task, delivered=False):
 
 @method_decorator(transaction.atomic, name='dispatch')
 class BoardViewSet(viewsets.ModelViewSet):
-    serializer_class = BoardSerializer
+    serializer_class = BoardWorkspaceSerializer
+    pagination_class=StandardPagination
+    def get_serializer_class(self):
+        if self.action=='list': return BoardSummarySerializer
+        return BoardWorkspaceSerializer
     def get_queryset(self):
         queryset = accessible_boards(self.request.user)
         if self.action not in ['restore', 'trash']:
             queryset = queryset.filter(deleted_at__isnull=True)
-        return queryset.select_related('owner').prefetch_related(
-            'members__user', 'labels', 'sprints__notes',
-            'columns__tasks__labels', 'columns__tasks__dependencies__column',
-            'columns__tasks__checklist', 'columns__tasks__comments__author',
-            'columns__tasks__attachments', 'columns__tasks__activities__actor',
-            'columns__tasks__assignee').order_by('id')
+        if self.action=='list':
+            return queryset.select_related('owner').prefetch_related('members').order_by('id')
+        columns=Column.objects.annotate(task_count=Count('tasks',filter=Q(tasks__deleted_at__isnull=True,tasks__archived=False)))
+        return queryset.select_related('owner').prefetch_related('members__user','labels','sprints__notes',Prefetch('columns',queryset=columns)).order_by('id')
     def perform_create(self, serializer):
         board = serializer.save(owner=self.request.user)
         Column.objects.bulk_create([Column(board=board, title=title, kind=kind, position=i) for i, (title, kind) in enumerate([('A fazer','backlog'),('Em andamento','progress'),('Concluído','done')])])
@@ -162,7 +167,7 @@ class ColumnViewSet(EntityViewSet):
             task.save(update_fields=['started_at','completed_at'])
     def get_queryset(self):
         qs = Column.objects.filter(board_id__in=board_ids(self.request)).prefetch_related('tasks')
-        return qs if self.action=='restore' else qs.filter(deleted_at__isnull=True)
+        return qs.order_by('position','id') if self.action=='restore' else qs.filter(deleted_at__isnull=True).order_by('position','id')
     def perform_destroy(self, instance):
         board = lock_board(self.request,instance.board,manage=True)
         if instance.tasks.filter(deleted_at__isnull=True).exists():
@@ -183,9 +188,43 @@ class ColumnViewSet(EntityViewSet):
 
 class TaskViewSet(EntityViewSet):
     serializer_class = TaskSerializer
+    pagination_class=StandardPagination
+    def get_serializer_class(self):
+        return TaskSummarySerializer if self.action=='list' else TaskSerializer
     def get_queryset(self):
-        qs = task_prefetch(Task.objects.filter(column__board_id__in=board_ids(self.request)))
-        return qs if self.action=='restore' else qs.filter(deleted_at__isnull=True)
+        qs=Task.objects.filter(column__board_id__in=board_ids(self.request))
+        if self.action=='list':
+            qs=qs.select_related('column__board','assignee').prefetch_related('labels','dependencies__column').annotate(checklist_count=Count('checklist',distinct=True),checklist_done=Count('checklist',filter=Q(checklist__done=True),distinct=True))
+            for field in ['column','sprint','assignee','priority']:
+                value=self.request.query_params.get(field)
+                if value and value!='all':
+                    if field in ['column','sprint','assignee'] and value not in ['none','backlog'] and not value.isdigit():
+                        raise ValidationError('Filtro inválido.')
+                    qs=qs.filter(**{f'{field}__isnull':True} if value in ['none','backlog'] else {field:value})
+            board=self.request.query_params.get('board')
+            if board:
+                if not board.isdigit():raise ValidationError('Quadro inválido.')
+                qs=qs.filter(column__board_id=board)
+            label=self.request.query_params.get('label')
+            if label and label!='all':
+                if not label.isdigit():raise ValidationError('Etiqueta inválida.')
+                qs=qs.filter(labels__id=label)
+            search=self.request.query_params.get('search')
+            if search:qs=qs.filter(Q(title__icontains=search)|Q(description__icontains=search))
+            blocked=self.request.query_params.get('blocked')
+            if blocked in ['blocked','free']:
+                pending=Q(blocked=True)|Q(dependencies__column__kind__in=['backlog','progress'])
+                qs=qs.filter(pending) if blocked=='blocked' else qs.exclude(pending)
+            due=self.request.query_params.get('due')
+            if due=='overdue':qs=qs.filter(due_date__lt=timezone.localdate()).exclude(column__kind='done')
+            if due=='soon':qs=qs.filter(due_date__range=(timezone.localdate(),timezone.localdate()+timedelta(days=7)))
+            if due=='none':qs=qs.filter(due_date__isnull=True)
+            archived=self.request.query_params.get('archived','false')
+            if archived!='all':qs=qs.filter(archived=archived=='true')
+            qs=qs.distinct()
+        else:
+            qs=task_prefetch(qs)
+        return qs.order_by('position','id') if self.action=='restore' else qs.filter(deleted_at__isnull=True).order_by('position','id')
     def perform_create(self, serializer):
         data = serializer.validated_data
         board = lock_board(self.request,data['column'].board)
@@ -196,6 +235,7 @@ class TaskViewSet(EntityViewSet):
         completion_times(task)
         task.save(update_fields=['started_at','completed_at'])
         flow(task, delivered=task.completed_at is not None)
+        sync_history(task)
         record(self.request,board,self.message('Criou',task),task,task.assignee)
     def perform_update(self, serializer):
         task = serializer.instance
@@ -212,12 +252,14 @@ class TaskViewSet(EntityViewSet):
         old_assignee = task.assignee_id
         old_column = task.column_id
         old_completed = task.completed_at
+        old_sprint = task.sprint
         serializer.save()
         if old_column != task.column_id:
             task.position = (task.column.tasks.exclude(pk=task.pk).aggregate(value=Max('position'))['value'] or 0)+1
         completion_times(task)
         task.save(update_fields=['position','started_at','completed_at'])
         flow(task, delivered=old_completed is None and task.completed_at is not None)
+        sync_history(task, old_sprint)
         labels={'title':'título','description':'descrição','priority':'prioridade','due_date':'prazo','column':'coluna','sprint':'sprint','assignee':'responsável','labels':'etiquetas','dependencies':'dependências','blocked':'bloqueio','blocked_reason':'motivo do bloqueio','archived':'arquivamento'}
         message=f'Atualizou {task.title}: {", ".join(labels.get(c,c) for c in changes) or "dados"}.'
         record(self.request,board,message,task,task.assignee if old_assignee!=task.assignee_id else None)
@@ -228,6 +270,7 @@ class TaskViewSet(EntityViewSet):
         instance.deleted_at = timezone.now()
         instance.save(update_fields=['deleted_at'])
         flow(instance)
+        sync_history(instance)
         record(self.request,board,self.message('Moveu para a lixeira a',instance),instance)
     @action(detail=True, methods=['post'])
     def restore(self, request, pk=None):
@@ -238,6 +281,7 @@ class TaskViewSet(EntityViewSet):
         task.deleted_at=None
         task.save(update_fields=['deleted_at'])
         flow(task)
+        sync_history(task)
         record(request,board,self.message('Restaurou',task),task)
         return Response(self.get_serializer(task).data)
     @action(detail=True, methods=['post'])
@@ -265,6 +309,7 @@ class TaskViewSet(EntityViewSet):
             item.position=i
         Task.objects.bulk_update(siblings,['column','position','started_at','completed_at'])
         flow(task, delivered=old_completed is None and task.completed_at is not None)
+        sync_history(task)
         record(request,board,f'Moveu {task.title} para {target.title}, posição {index+1}.',task)
         return Response(self.get_serializer(task).data)
 
@@ -272,6 +317,10 @@ class SprintViewSet(EntityViewSet):
     serializer_class = SprintSerializer
     def get_queryset(self):
         return Sprint.objects.filter(board_id__in=board_ids(self.request)).prefetch_related('notes')
+    @action(detail=True,methods=['get'])
+    def history(self,request,pk=None):
+        sprint=self.get_object()
+        return Response([{'id':e.id,'task':e.task_id,'task_key':e.task_key,'snapshot':e.snapshot,'added_at':e.added_at,'removed_at':e.removed_at} for e in sprint.entries.all()])
     def perform_destroy(self, instance):
         if instance.status!='planned':
             raise ValidationError('Somente sprints planejadas podem ser excluídas.')
@@ -294,6 +343,7 @@ class SprintViewSet(EntityViewSet):
         sprint.refresh_from_db()
         if sprint.status!='active':
             raise ValidationError('Somente uma sprint em andamento pode ser encerrada.')
+        freeze_sprint(sprint)
         tasks=sprint.tasks.filter(deleted_at__isnull=True,archived=False)
         sprint.total_at_close=tasks.count()
         sprint.completed_at_close=tasks.filter(column__kind='done').count()
