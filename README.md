@@ -273,7 +273,7 @@ docker compose -f compose.yml -f compose.production.yml up --build --wait
 
 O perfil de produção exige chave, domínio, origem HTTPS, senha do banco e SMTP. Coloque Nginx atrás de um proxy TLS que substitua os cabeçalhos encaminhados; o backend não publica uma porta direta. Use uma senha de banco compatível com URL. A inicialização aplica migrações e coleta arquivos estáticos; em uma implantação com várias réplicas, execute as migrações em uma etapa única antes de subir as réplicas.
 
-O CI configura a subida dos containers e verifica a rota da API. Docker não estava disponível no ambiente local de implementação; essa execução ainda precisa ser confirmada pelo job de containers.
+O CI sobe os containers e verifica a rota da API. Docker não estava disponível no ambiente local de implementação; a execução foi confirmada pelo [job de containers](https://github.com/rabelismerim/WorkBoard/actions/runs/38653852010), junto dos testes de backend, interface e build.
 
 ## Conta e recuperação de senha
 
